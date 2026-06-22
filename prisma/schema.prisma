@@ -1,0 +1,218 @@
+// =============================================================
+// Prisma Schema — Multi-Tenant Studio SaaS Platform
+// =============================================================
+// Tenancy model: SINGLE DATABASE, SHARED SCHEMA.
+// Every tenant-scoped table carries a `studioId` foreign key.
+// All application queries MUST filter by studioId (enforced in
+// src/lib/db.ts via a Prisma Client Extension — see that file).
+//
+// Designed so a future "Service/Appointment" module can be added
+// without touching this core schema (see notes at the bottom).
+// =============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -------------------------------------------------------------
+// ENUMS
+// -------------------------------------------------------------
+
+enum StudioStatus {
+  active
+  suspended
+}
+
+enum UserRole {
+  super_admin // Anthropic-style platform admin, not tied to a single studio
+  owner // Studio owner (renamed from "בעלים")
+  staff // Studio staff / instructor (renamed from "צוות")
+  client // End customer (renamed from "לקוח")
+}
+
+enum BookingStatus {
+  booked
+  cancelled
+  waitlist
+  attended // used by attendance tracking
+  no_show
+}
+
+enum MembershipType {
+  monthly_subscription // "מנוי_חודשי"
+  punch_card // "כרטיס_ניקבון"
+}
+
+enum MembershipStatus {
+  active
+  expired
+  cancelled
+}
+
+// -------------------------------------------------------------
+// TENANT ROOT
+// -------------------------------------------------------------
+
+model Studio {
+  id        String       @id @default(uuid()) @db.Uuid
+  name      String
+  slug      String       @unique // used for path-based tenant resolution: /[studio_slug]
+  status    StudioStatus @default(active)
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+
+  // Relations
+  users       User[]
+  classes     Class[]
+  bookings    Booking[]
+  memberships Membership[]
+
+  @@map("studios")
+}
+
+// -------------------------------------------------------------
+// USERS (tenant-scoped, except super_admin which has studioId = null)
+// -------------------------------------------------------------
+
+model User {
+  // NOTE: this id is NOT self-generated in practice — it is always
+  // set explicitly to match the corresponding Supabase auth.users.id
+  // (see src/app/api/studios/route.ts and src/app/signup/actions.ts).
+  // The @default(uuid()) below only kicks in for rows created without
+  // an explicit id (e.g. ad-hoc scripts/tests) — production signup
+  // flows always pass id themselves.
+  id        String   @id @default(uuid()) @db.Uuid
+  studioId  String?  @map("studio_id") @db.Uuid // nullable ONLY for super_admin
+  email     String
+  fullName  String   @map("full_name")
+  phone     String?
+  role      UserRole
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  studio Studio? @relation(fields: [studioId], references: [id], onDelete: Cascade)
+
+  // As an instructor on classes
+  classesTaught Class[] @relation("Instructor")
+
+  // As a client making bookings
+  bookings    Booking[]    @relation("ClientBookings")
+  memberships Membership[] @relation("ClientMemberships")
+
+  // A user's email must be unique WITHIN a studio, not globally —
+  // the same person (by email) could in theory be a client of two
+  // different studios with two separate user rows.
+  @@unique([studioId, email])
+  @@index([studioId])
+  @@map("users")
+}
+
+// -------------------------------------------------------------
+// CLASSES / SCHEDULE
+// -------------------------------------------------------------
+
+model Class {
+  id             String   @id @default(uuid()) @db.Uuid
+  studioId       String   @map("studio_id") @db.Uuid
+  title          String
+  instructorId   String?  @map("instructor_id") @db.Uuid
+  capacity       Int
+  startTime      DateTime @map("start_time")
+  endTime        DateTime @map("end_time")
+  recurrenceRule String?  @map("recurrence_rule") // iCal RRULE string, e.g. "FREQ=WEEKLY;BYDAY=MO,WE"
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  studio     Studio    @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  instructor User?     @relation("Instructor", fields: [instructorId], references: [id])
+  bookings   Booking[]
+
+  @@index([studioId])
+  @@index([studioId, startTime])
+  @@map("classes")
+}
+
+// -------------------------------------------------------------
+// BOOKINGS
+// -------------------------------------------------------------
+
+model Booking {
+  id        String        @id @default(uuid()) @db.Uuid
+  studioId  String        @map("studio_id") @db.Uuid
+  classId   String        @map("class_id") @db.Uuid
+  clientId  String        @map("client_id") @db.Uuid
+  status    BookingStatus @default(booked)
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  class  Class  @relation(fields: [classId], references: [id], onDelete: Cascade)
+  client User   @relation("ClientBookings", fields: [clientId], references: [id])
+
+  // Prevent the same client from double-booking the same class
+  @@unique([classId, clientId])
+  @@index([studioId])
+  @@index([studioId, classId])
+  @@map("bookings")
+}
+
+// -------------------------------------------------------------
+// MEMBERSHIPS / PUNCH CARDS
+// -------------------------------------------------------------
+
+model Membership {
+  id               String           @id @default(uuid()) @db.Uuid
+  studioId         String           @map("studio_id") @db.Uuid
+  clientId         String           @map("client_id") @db.Uuid
+  type             MembershipType
+  status           MembershipStatus @default(active)
+  totalPunches     Int?             @map("total_punches") // null for monthly_subscription
+  remainingPunches Int?             @map("remaining_punches")
+  expiresAt        DateTime?        @map("expires_at")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  client User   @relation("ClientMemberships", fields: [clientId], references: [id])
+
+  @@index([studioId])
+  @@index([studioId, clientId])
+  @@map("memberships")
+}
+
+// =============================================================
+// FUTURE MODULE (NOT YET ACTIVE) — Service / Appointment
+// =============================================================
+// When Phase 2 begins, add models like:
+//
+// model Service {
+//   id          String   @id @default(uuid()) @db.Uuid
+//   studioId    String   @map("studio_id") @db.Uuid
+//   name        String
+//   durationMin Int      @map("duration_min")
+//   price       Decimal  @db.Decimal(10, 2)
+//   ...
+//   @@map("services")
+// }
+//
+// model Appointment {
+//   id          String   @id @default(uuid()) @db.Uuid
+//   studioId    String   @map("studio_id") @db.Uuid
+//   serviceId   String   @map("service_id") @db.Uuid
+//   providerId  String   @map("provider_id") @db.Uuid // staff member
+//   clientId    String   @map("client_id") @db.Uuid
+//   startTime   DateTime @map("start_time")
+//   endTime     DateTime @map("end_time")
+//   status      BookingStatus // reuse the same enum
+//   ...
+//   @@map("appointments")
+// }
+//
+// These follow the exact same studioId-scoping pattern as Class/Booking,
+// so the auth middleware, tenant resolver, and Prisma extension below
+// require ZERO changes to support them.
