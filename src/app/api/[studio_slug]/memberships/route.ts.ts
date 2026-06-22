@@ -57,6 +57,9 @@ export const POST = withApiErrorHandling(async (req) => {
 
   const membership = await db.membership.create({
     data: {
+      // studioId is also auto-injected by getTenantDb()'s extension at
+      // runtime, but Prisma's generated types require it statically.
+      studioId: session.studioId,
       clientId: parsed.data.clientId,
       type: parsed.data.type,
       totalPunches: parsed.data.totalPunches,

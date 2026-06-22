@@ -86,7 +86,9 @@ export const POST = withApiErrorHandling(async (req) => {
   try {
     const db = getTenantDb(session.studioId);
     const user = await db.user.create({
-      data: { id: authData.user.id, fullName, email, phone, role },
+      // studioId is also auto-injected by getTenantDb()'s extension at
+      // runtime, but Prisma's generated types require it statically.
+      data: { id: authData.user.id, studioId: session.studioId, fullName, email, phone, role },
     });
     return NextResponse.json({ user }, { status: 201 });
   } catch (err) {

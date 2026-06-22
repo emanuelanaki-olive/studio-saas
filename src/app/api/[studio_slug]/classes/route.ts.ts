@@ -65,6 +65,12 @@ export const POST = withApiErrorHandling(async (req) => {
 
   const klass = await db.class.create({
     data: {
+      // studioId is also auto-injected by getTenantDb()'s extension at
+      // runtime, but Prisma's generated types require it statically —
+      // passing it explicitly here keeps `tsc`/the build happy without
+      // changing behavior (the extension overwrites it with the same
+      // value either way).
+      studioId: session.studioId,
       title: parsed.data.title,
       instructorId: parsed.data.instructorId,
       capacity: parsed.data.capacity,
