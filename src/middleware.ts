@@ -31,6 +31,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import type { CookieOptions } from "@supabase/ssr";
 
 // Routes that don't have a studio_slug segment at all (marketing
 // site, auth pages, the signup/login API, Next internals).
@@ -79,7 +80,7 @@ export async function middleware(request: NextRequest) {
         getAll() {
           return request.cookies.getAll();
         },
-        setAll(cookiesToSet) {
+        setAll(cookiesToSet: { name: string; value: string; options: CookieOptions }[]) {
           // Write refreshed cookies onto the SAME response object we
           // already created above, rather than constructing a new
           // one — this is what preserves the x-studio-slug header.
