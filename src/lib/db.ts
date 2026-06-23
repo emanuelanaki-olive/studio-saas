@@ -75,13 +75,13 @@ export function getTenantDb(studioId: string) {
       $allModels: {
         async findMany({ model, args, query }) {
           if (TENANT_SCOPED_MODELS.has(lower(model))) {
-            args.where = { ...args.where, studioId };
+            mergeStudioId(args, "where", studioId);
           }
           return query(args);
         },
         async findFirst({ model, args, query }) {
           if (TENANT_SCOPED_MODELS.has(lower(model))) {
-            args.where = { ...args.where, studioId };
+            mergeStudioId(args, "where", studioId);
           }
           return query(args);
         },
@@ -102,43 +102,70 @@ export function getTenantDb(studioId: string) {
         },
         async count({ model, args, query }) {
           if (TENANT_SCOPED_MODELS.has(lower(model))) {
-            args.where = { ...args.where, studioId };
+            mergeStudioId(args, "where", studioId);
           }
           return query(args);
         },
         async create({ model, args, query }) {
           if (TENANT_SCOPED_MODELS.has(lower(model))) {
-            args.data = { ...args.data, studioId };
+            mergeStudioId(args, "data", studioId);
           }
           return query(args);
         },
         async update({ model, args, query }) {
           if (TENANT_SCOPED_MODELS.has(lower(model))) {
-            args.where = { ...args.where, studioId } as typeof args.where;
+            mergeStudioId(args, "where", studioId);
           }
           return query(args);
         },
         async updateMany({ model, args, query }) {
           if (TENANT_SCOPED_MODELS.has(lower(model))) {
-            args.where = { ...args.where, studioId };
+            mergeStudioId(args, "where", studioId);
           }
           return query(args);
         },
         async delete({ model, args, query }) {
           if (TENANT_SCOPED_MODELS.has(lower(model))) {
-            args.where = { ...args.where, studioId } as typeof args.where;
+            mergeStudioId(args, "where", studioId);
           }
           return query(args);
         },
         async deleteMany({ model, args, query }) {
           if (TENANT_SCOPED_MODELS.has(lower(model))) {
-            args.where = { ...args.where, studioId };
+            mergeStudioId(args, "where", studioId);
           }
           return query(args);
         },
       },
     },
   });
+}
+
+/**
+ * Merges `{ studioId }` into a given key (`"where"` or `"data"`) of a
+ * Prisma extension's `args` object.
+ *
+ * WHY THE CAST: Prisma's `$allModels` extension hooks type `args`
+ * generically across every model's input shape simultaneously (a
+ * union of Class/User/Booking/... create-or-where inputs). That
+ * union doesn't have a consistent `studioId` field type — for some
+ * models in the union it's `string`, for others (models without a
+ * studioId column) it's effectively absent/undefined — so direct
+ * assignment fails type-checking even though we've already verified
+ * at runtime (via TENANT_SCOPED_MODELS.has(...)) that the model
+ * being queried right now does have that column.
+ *
+ * We narrow with `Record<string, unknown>` here deliberately, in
+ * exactly this one spot, rather than loosening types elsewhere in
+ * the app — the runtime guard above is what actually keeps this
+ * safe; the cast just tells the compiler what we already know.
+ */
+function mergeStudioId(
+  args: Record<string, unknown>,
+  key: "where" | "data",
+  studioId: string
+) {
+  args[key] = { ...(args[key] as Record<string, unknown> | undefined), studioId };
 }
 
 /**
