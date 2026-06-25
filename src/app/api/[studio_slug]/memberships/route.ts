@@ -4,6 +4,14 @@
  * GET  -> list a client's (or, for staff, all clients') memberships
  * POST -> create a membership (owner/staff only — e.g. selling a
  *         new punch card or starting a subscription at the front desk)
+ *
+ * Membership types and their required fields:
+ *   - monthly_unlimited: requires expiresAt. No credit fields at all.
+ *   - monthly_limited:   requires classesPerPeriod + expiresAt.
+ *                        classesUsedThisPeriod starts at 0;
+ *                        currentPeriodStart defaults to now().
+ *   - punch_card:        requires totalPunches. remainingPunches is
+ *                        set equal to totalPunches at creation.
  */
 
 import { NextResponse } from "next/server";
@@ -14,8 +22,9 @@ import { withApiErrorHandling } from "@/lib/api-handler";
 
 const CreateMembershipSchema = z.object({
   clientId: z.string().uuid(),
-  type: z.enum(["monthly_subscription", "punch_card"]),
+  type: z.enum(["monthly_unlimited", "monthly_limited", "punch_card"]),
   totalPunches: z.number().int().positive().optional(),
+  classesPerPeriod: z.number().int().positive().optional(),
   expiresAt: z.string().datetime().optional(),
 });
 
@@ -47,10 +56,26 @@ export const POST = withApiErrorHandling(async (req) => {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
+  const { type, clientId, totalPunches, classesPerPeriod, expiresAt } = parsed.data;
 
-  if (parsed.data.type === "punch_card" && !parsed.data.totalPunches) {
+  // Per-type required-field validation. Doing this here (rather than
+  // a single zod .refine) keeps each error message specific to the
+  // type, which is clearer for the front-end form to surface.
+  if (type === "punch_card" && !totalPunches) {
     return NextResponse.json(
       { error: "totalPunches is required for punch_card memberships." },
+      { status: 400 }
+    );
+  }
+  if (type === "monthly_limited" && !classesPerPeriod) {
+    return NextResponse.json(
+      { error: "classesPerPeriod is required for monthly_limited memberships." },
+      { status: 400 }
+    );
+  }
+  if ((type === "monthly_unlimited" || type === "monthly_limited") && !expiresAt) {
+    return NextResponse.json(
+      { error: "expiresAt is required for monthly memberships." },
       { status: 400 }
     );
   }
@@ -60,11 +85,13 @@ export const POST = withApiErrorHandling(async (req) => {
       // studioId is also auto-injected by getTenantDb()'s extension at
       // runtime, but Prisma's generated types require it statically.
       studioId: session.studioId,
-      clientId: parsed.data.clientId,
-      type: parsed.data.type,
-      totalPunches: parsed.data.totalPunches,
-      remainingPunches: parsed.data.totalPunches,
-      expiresAt: parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : undefined,
+      clientId,
+      type,
+      totalPunches: type === "punch_card" ? totalPunches : undefined,
+      remainingPunches: type === "punch_card" ? totalPunches : undefined,
+      classesPerPeriod: type === "monthly_limited" ? classesPerPeriod : undefined,
+      currentPeriodStart: type === "monthly_limited" ? new Date() : undefined,
+      expiresAt: expiresAt ? new Date(expiresAt) : undefined,
     },
   });
 

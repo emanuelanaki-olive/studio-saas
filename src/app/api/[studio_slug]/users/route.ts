@@ -25,6 +25,12 @@ const CreateUserSchema = z.object({
   phone: z.string().optional(),
   role: z.enum(["client", "staff"]), // owners are created only via studio signup
   temporaryPassword: z.string().min(8),
+  // CRM fields — optional at creation; a staff member can fill these
+  // in immediately or leave them for later via PATCH.
+  clientStatus: z.enum(["lead", "active", "inactive", "frozen"]).optional(),
+  healthDeclaration: z.boolean().optional(),
+  medicalNotes: z.string().optional(),
+  birthDate: z.string().date().optional(),
 });
 
 export const GET = withApiErrorHandling(async (req) => {
@@ -36,7 +42,18 @@ export const GET = withApiErrorHandling(async (req) => {
 
   const users = await db.user.findMany({
     where: { role: role as "client" | "staff" | "owner" | undefined },
-    select: { id: true, fullName: true, email: true, phone: true, role: true, createdAt: true },
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phone: true,
+      role: true,
+      createdAt: true,
+      clientStatus: true,
+      healthDeclaration: true,
+      medicalNotes: true,
+      birthDate: true,
+    },
     orderBy: { fullName: "asc" },
   });
 
@@ -50,7 +67,8 @@ export const POST = withApiErrorHandling(async (req) => {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  const { fullName, email, phone, role, temporaryPassword } = parsed.data;
+  const { fullName, email, phone, role, temporaryPassword, clientStatus, healthDeclaration, medicalNotes, birthDate } =
+    parsed.data;
 
   // Only owners can add staff; staff can add clients but not other staff.
   if (role === "staff" && session.role !== "owner") {
@@ -88,7 +106,18 @@ export const POST = withApiErrorHandling(async (req) => {
     const user = await db.user.create({
       // studioId is also auto-injected by getTenantDb()'s extension at
       // runtime, but Prisma's generated types require it statically.
-      data: { id: authData.user.id, studioId: session.studioId, fullName, email, phone, role },
+      data: {
+        id: authData.user.id,
+        studioId: session.studioId,
+        fullName,
+        email,
+        phone,
+        role,
+        clientStatus: role === "client" ? clientStatus ?? "active" : undefined,
+        healthDeclaration,
+        medicalNotes,
+        birthDate: birthDate ? new Date(birthDate) : undefined,
+      },
     });
     return NextResponse.json({ user }, { status: 201 });
   } catch (err) {

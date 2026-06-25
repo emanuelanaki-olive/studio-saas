@@ -54,12 +54,18 @@ describe("createBooking", () => {
     clientAId = clientA.id;
     clientBId = clientB.id;
 
-    // Both clients get a monthly subscription so membership checks
-    // don't interfere with the capacity tests below.
+    // Both clients get an unlimited monthly membership so capacity
+    // tests below aren't affected by credit checks.
     await Promise.all(
       [clientAId, clientBId].map((clientId) =>
         prisma.membership.create({
-          data: { studioId, clientId, type: "monthly_subscription", status: "active" },
+          data: {
+            studioId,
+            clientId,
+            type: "monthly_unlimited",
+            status: "active",
+            expiresAt: new Date(Date.now() + 30 * 86_400_000),
+          },
         })
       )
     );
@@ -107,6 +113,92 @@ describe("createBooking", () => {
     await expect(
       createBooking({ studioId, classId: classId, clientId: punchClient.id })
     ).rejects.toThrow(InsufficientPunchesError);
+  });
+
+  it("throws InsufficientPunchesError when a monthly_limited client has used their full period", async () => {
+    const limitedClient = await prisma.user.create({
+      data: { studioId, email: "d@test.com", fullName: "Client D", role: "client" },
+    });
+    await prisma.membership.create({
+      data: {
+        studioId,
+        clientId: limitedClient.id,
+        type: "monthly_limited",
+        classesPerPeriod: 4,
+        classesUsedThisPeriod: 4, // already at the cap
+        currentPeriodStart: new Date(),
+        expiresAt: new Date(Date.now() + 30 * 86_400_000),
+        status: "active",
+      },
+    });
+
+    await expect(
+      createBooking({ studioId, classId, clientId: limitedClient.id })
+    ).rejects.toThrow(InsufficientPunchesError);
+  });
+
+  it("throws InsufficientPunchesError when the membership is frozen", async () => {
+    const frozenClient = await prisma.user.create({
+      data: { studioId, email: "e@test.com", fullName: "Client E", role: "client" },
+    });
+    await prisma.membership.create({
+      data: {
+        studioId,
+        clientId: frozenClient.id,
+        type: "monthly_unlimited",
+        status: "frozen",
+        frozenAt: new Date(),
+        expiresAt: new Date(Date.now() + 30 * 86_400_000),
+      },
+    });
+
+    await expect(
+      createBooking({ studioId, classId, clientId: frozenClient.id })
+    ).rejects.toThrow(InsufficientPunchesError);
+  });
+
+  it("marks a cancellation inside the studio's window as late_cancelled and does not refund credit", async () => {
+    // Class starts in 1 hour; default cancellation window is 12h, so
+    // cancelling now is well inside the "too late" window.
+    const soonClass = await prisma.class.create({
+      data: {
+        studioId,
+        title: "Starting Soon",
+        capacity: 5,
+        startTime: new Date(Date.now() + 60 * 60 * 1000),
+        endTime: new Date(Date.now() + 2 * 60 * 60 * 1000),
+      },
+    });
+
+    const punchClient = await prisma.user.create({
+      data: { studioId, email: "f@test.com", fullName: "Client F", role: "client" },
+    });
+    const membership = await prisma.membership.create({
+      data: {
+        studioId,
+        clientId: punchClient.id,
+        type: "punch_card",
+        totalPunches: 5,
+        remainingPunches: 5,
+        status: "active",
+      },
+    });
+
+    const booking = await createBooking({
+      studioId,
+      classId: soonClass.id,
+      clientId: punchClient.id,
+    });
+
+    const cancelled = await cancelBooking({ studioId, bookingId: booking.id });
+    expect(cancelled.status).toBe("late_cancelled");
+
+    const updatedMembership = await prisma.membership.findUniqueOrThrow({
+      where: { id: membership.id },
+    });
+    // Still 4, not refunded back to 5 — the late cancellation keeps
+    // the credit spent.
+    expect(updatedMembership.remainingPunches).toBe(4);
   });
 
   it("promotes the next waitlisted booking after a cancellation", async () => {

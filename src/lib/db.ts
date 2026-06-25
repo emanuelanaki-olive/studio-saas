@@ -45,6 +45,10 @@ const TENANT_SCOPED_MODELS = new Set([
   "class",
   "booking",
   "membership",
+  "studiosettings",
+  "service",
+  "availabilityblock",
+  "appointment",
 ]);
 
 /**

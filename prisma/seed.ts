@@ -117,6 +117,13 @@ async function main() {
     },
   });
 
+  // Default cancellation-window settings for yoga-flow (12h, matches
+  // the schema's own default — set explicitly here so it's visible
+  // in seeded data rather than relying on lazy creation).
+  await prisma.studioSettings.create({
+    data: { studioId: yogaFlow.id, cancellationWindowHours: 12 },
+  });
+
   // ---- Studio 2: Pilates Pro (deliberately similar names/data) ----
   const pilatesPro = await prisma.studio.create({
     data: { name: "Pilates Pro", slug: "pilates-pro" },
@@ -141,6 +148,12 @@ async function main() {
       email: "client@pilatespro.example",
       fullName: "Noa Bar", // same name as the yoga client, different person/tenant
       role: "client",
+      // CRM fields populated here as a demonstration — yoga-flow's
+      // client deliberately leaves these blank/default to show both
+      // states in the seeded data.
+      clientStatus: "active",
+      healthDeclaration: true,
+      birthDate: new Date("1990-04-12"),
     },
   });
 
@@ -158,9 +171,16 @@ async function main() {
     data: {
       studioId: pilatesPro.id,
       clientId: pilatesClient.id,
-      type: "monthly_subscription",
+      type: "monthly_unlimited",
       expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30),
     },
+  });
+
+  // pilates-pro uses a shorter, stricter cancellation window than
+  // yoga-flow's default — demonstrates that the setting is genuinely
+  // per-studio.
+  await prisma.studioSettings.create({
+    data: { studioId: pilatesPro.id, cancellationWindowHours: 24 },
   });
 
   console.log("\nSeeded two tenants. Every login below uses the password: " + DEMO_PASSWORD + "\n");

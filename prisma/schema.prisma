@@ -6,8 +6,11 @@
 // All application queries MUST filter by studioId (enforced in
 // src/lib/db.ts via a Prisma Client Extension — see that file).
 //
-// Designed so a future "Service/Appointment" module can be added
-// without touching this core schema (see notes at the bottom).
+// Two parallel booking tracks:
+//   Track A (Class/Booking)         — fixed-schedule group classes
+//   Track B (Service/AvailabilityBlock/Appointment) — 1-on-1, on-demand
+// Both follow the identical studioId-scoping + credit/membership
+// pattern; see src/lib/bookings.ts and src/lib/appointments.ts.
 // =============================================================
 
 generator client {
@@ -37,21 +40,41 @@ enum UserRole {
 
 enum BookingStatus {
   booked
-  cancelled
+  cancelled // cancelled within the allowed window — credit refunded
+  late_cancelled // cancelled inside the cancellation window — credit NOT refunded
+  no_show // never cancelled, never showed up — credit NOT refunded
   waitlist
   attended // used by attendance tracking
-  no_show
 }
 
 enum MembershipType {
-  monthly_subscription // "מנוי_חודשי"
-  punch_card // "כרטיס_ניקבון"
+  monthly_unlimited // unlimited classes until expires_at
+  monthly_limited // capped number of classes per period, resets monthly
+  punch_card // fixed pool of credits, decremented per booking, no reset
 }
 
 enum MembershipStatus {
   active
   expired
   cancelled
+  frozen // paused: expiresAt does not advance while frozen
+}
+
+enum ClientStatus {
+  lead // inquired but never converted to a paying client
+  active
+  inactive // no active membership / hasn't attended recently
+  frozen // membership frozen — kept distinct from MembershipStatus.frozen
+         // because a client can have a frozen *account* independent of
+         // any specific membership row (e.g. injury leave)
+}
+
+enum AppointmentStatus {
+  booked
+  cancelled
+  late_cancelled
+  no_show
+  completed
 }
 
 // -------------------------------------------------------------
@@ -67,12 +90,35 @@ model Studio {
   updatedAt DateTime     @updatedAt @map("updated_at")
 
   // Relations
-  users       User[]
-  classes     Class[]
-  bookings    Booking[]
-  memberships Membership[]
+  users              User[]
+  classes            Class[]
+  bookings           Booking[]
+  memberships        Membership[]
+  settings           StudioSettings?
+  services           Service[]
+  appointments       Appointment[]
+  availabilityBlocks AvailabilityBlock[]
 
   @@map("studios")
+}
+
+// -------------------------------------------------------------
+// STUDIO SETTINGS (1:1 with Studio — operational policy config)
+// -------------------------------------------------------------
+
+model StudioSettings {
+  id                       String   @id @default(uuid()) @db.Uuid
+  studioId                 String   @unique @map("studio_id") @db.Uuid
+  // How many hours before a class/appointment start time a client
+  // can still cancel WITHOUT losing their credit. Cancelling inside
+  // this window -> status becomes late_cancelled, credit not refunded.
+  cancellationWindowHours  Int      @default(12) @map("cancellation_window_hours")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+
+  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+
+  @@map("studio_settings")
 }
 
 // -------------------------------------------------------------
@@ -95,6 +141,14 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // --- CRM fields (clients only, but harmless on staff/owner rows) ---
+  // `status` tracks the CLIENT'S lifecycle independent of any single
+  // membership row — e.g. a "lead" has no membership yet at all.
+  clientStatus      ClientStatus? @map("client_status")
+  healthDeclaration Boolean       @default(false) @map("health_declaration")
+  medicalNotes      String?       @map("medical_notes")
+  birthDate         DateTime?     @map("birth_date") @db.Date
+
   studio Studio? @relation(fields: [studioId], references: [id], onDelete: Cascade)
 
   // As an instructor on classes
@@ -103,6 +157,12 @@ model User {
   // As a client making bookings
   bookings    Booking[]    @relation("ClientBookings")
   memberships Membership[] @relation("ClientMemberships")
+
+  // Appointments: as the client booking one, or as the staff member
+  // providing it
+  appointmentsAsClient   Appointment[]       @relation("AppointmentClient")
+  appointmentsAsProvider Appointment[]       @relation("AppointmentProvider")
+  availabilityBlocks     AvailabilityBlock[] @relation("ProviderAvailability")
 
   // A user's email must be unique WITHIN a studio, not globally —
   // the same person (by email) could in theory be a client of two
@@ -142,17 +202,24 @@ model Class {
 // -------------------------------------------------------------
 
 model Booking {
-  id        String        @id @default(uuid()) @db.Uuid
-  studioId  String        @map("studio_id") @db.Uuid
-  classId   String        @map("class_id") @db.Uuid
-  clientId  String        @map("client_id") @db.Uuid
-  status    BookingStatus @default(booked)
-  createdAt DateTime      @default(now()) @map("created_at")
-  updatedAt DateTime      @updatedAt @map("updated_at")
+  id           String        @id @default(uuid()) @db.Uuid
+  studioId     String        @map("studio_id") @db.Uuid
+  classId      String        @map("class_id") @db.Uuid
+  clientId     String        @map("client_id") @db.Uuid
+  // Which membership this booking drew a credit from, if any (null
+  // for monthly_unlimited, which never decrements anything). Storing
+  // this — rather than re-deriving "the client's active membership"
+  // at cancellation time — is what makes refunds exact even if a
+  // client has switched memberships between booking and cancelling.
+  membershipId String?       @map("membership_id") @db.Uuid
+  status       BookingStatus @default(booked)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
 
-  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
-  class  Class  @relation(fields: [classId], references: [id], onDelete: Cascade)
-  client User   @relation("ClientBookings", fields: [clientId], references: [id])
+  studio     Studio      @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  class      Class       @relation(fields: [classId], references: [id], onDelete: Cascade)
+  client     User        @relation("ClientBookings", fields: [clientId], references: [id])
+  membership Membership? @relation(fields: [membershipId], references: [id])
 
   // Prevent the same client from double-booking the same class
   @@unique([classId, clientId])
@@ -166,19 +233,41 @@ model Booking {
 // -------------------------------------------------------------
 
 model Membership {
-  id               String           @id @default(uuid()) @db.Uuid
-  studioId         String           @map("studio_id") @db.Uuid
-  clientId         String           @map("client_id") @db.Uuid
-  type             MembershipType
-  status           MembershipStatus @default(active)
-  totalPunches     Int?             @map("total_punches") // null for monthly_subscription
-  remainingPunches Int?             @map("remaining_punches")
-  expiresAt        DateTime?        @map("expires_at")
-  createdAt        DateTime         @default(now()) @map("created_at")
-  updatedAt        DateTime         @updatedAt @map("updated_at")
+  id       String           @id @default(uuid()) @db.Uuid
+  studioId String           @map("studio_id") @db.Uuid
+  clientId String           @map("client_id") @db.Uuid
+  type     MembershipType
+  status   MembershipStatus @default(active)
 
-  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
-  client User   @relation("ClientMemberships", fields: [clientId], references: [id])
+  // --- punch_card fields ---
+  totalPunches     Int? @map("total_punches") // fixed pool, never resets
+  remainingPunches Int? @map("remaining_punches")
+
+  // --- monthly_limited fields ---
+  // e.g. "8 classes per month" -> classesPerPeriod = 8. Resets to
+  // this value at the start of each period (see resetClassesUsed()
+  // in src/lib/memberships.ts, intended to run on a schedule).
+  classesPerPeriod Int? @map("classes_per_period")
+  classesUsedThisPeriod Int @default(0) @map("classes_used_this_period")
+  currentPeriodStart    DateTime? @map("current_period_start")
+
+  // --- monthly_unlimited & monthly_limited: expiry ---
+  expiresAt DateTime? @map("expires_at")
+
+  // --- freeze tracking ---
+  // When frozen, expiresAt should NOT advance. We record when the
+  // freeze started so that on unfreeze we can push expiresAt forward
+  // by exactly the frozen duration (see unfreezeMembership() in
+  // src/lib/memberships.ts).
+  frozenAt DateTime? @map("frozen_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  studio       Studio        @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  client       User          @relation("ClientMemberships", fields: [clientId], references: [id])
+  bookings     Booking[]
+  appointments Appointment[]
 
   @@index([studioId])
   @@index([studioId, clientId])
@@ -186,33 +275,83 @@ model Membership {
 }
 
 // =============================================================
-// FUTURE MODULE (NOT YET ACTIVE) — Service / Appointment
+// PHASE 2 — Service / Appointment / Instructor Availability
 // =============================================================
-// When Phase 2 begins, add models like:
-//
-// model Service {
-//   id          String   @id @default(uuid()) @db.Uuid
-//   studioId    String   @map("studio_id") @db.Uuid
-//   name        String
-//   durationMin Int      @map("duration_min")
-//   price       Decimal  @db.Decimal(10, 2)
-//   ...
-//   @@map("services")
-// }
-//
-// model Appointment {
-//   id          String   @id @default(uuid()) @db.Uuid
-//   studioId    String   @map("studio_id") @db.Uuid
-//   serviceId   String   @map("service_id") @db.Uuid
-//   providerId  String   @map("provider_id") @db.Uuid // staff member
-//   clientId    String   @map("client_id") @db.Uuid
-//   startTime   DateTime @map("start_time")
-//   endTime     DateTime @map("end_time")
-//   status      BookingStatus // reuse the same enum
-//   ...
-//   @@map("appointments")
-// }
-//
-// These follow the exact same studioId-scoping pattern as Class/Booking,
-// so the auth middleware, tenant resolver, and Prisma extension below
-// require ZERO changes to support them.
+// Same studioId-scoping pattern as Class/Booking — the auth
+// middleware, tenant resolver, and getTenantDb() extension required
+// ZERO changes to support these (just registered the new model names
+// in TENANT_SCOPED_MODELS, see src/lib/db.ts).
+// =============================================================
+
+model Service {
+  id          String  @id @default(uuid()) @db.Uuid
+  studioId    String  @map("studio_id") @db.Uuid
+  name        String
+  durationMin Int     @map("duration_min")
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  studio       Studio        @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+
+  @@index([studioId])
+  @@map("services")
+}
+
+// -------------------------------------------------------------
+// AVAILABILITY BLOCKS — recurring working hours per instructor
+// -------------------------------------------------------------
+// e.g. "Mondays 08:00-12:00" -> dayOfWeek=1, startMinute=480,
+// endMinute=720. Appointments are only bookable inside a block that
+// belongs to the chosen provider and doesn't already overlap another
+// appointment for that provider (enforced in
+// src/lib/appointments.ts, the same way createBooking() enforces
+// class capacity).
+
+model AvailabilityBlock {
+  id          String @id @default(uuid()) @db.Uuid
+  studioId    String @map("studio_id") @db.Uuid
+  providerId  String @map("provider_id") @db.Uuid
+  dayOfWeek   Int    @map("day_of_week") // 0 = Sunday ... 6 = Saturday
+  startMinute Int    @map("start_minute") // minutes since midnight, e.g. 480 = 08:00
+  endMinute   Int    @map("end_minute")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  studio   Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  provider User   @relation("ProviderAvailability", fields: [providerId], references: [id])
+
+  @@index([studioId])
+  @@index([studioId, providerId])
+  @@map("availability_blocks")
+}
+
+// -------------------------------------------------------------
+// APPOINTMENTS — 1-on-1, on-demand bookings against a provider's
+// availability, distinct from the fixed-schedule group Class model.
+// -------------------------------------------------------------
+
+model Appointment {
+  id           String            @id @default(uuid()) @db.Uuid
+  studioId     String            @map("studio_id") @db.Uuid
+  serviceId    String            @map("service_id") @db.Uuid
+  providerId   String            @map("provider_id") @db.Uuid
+  clientId     String            @map("client_id") @db.Uuid
+  membershipId String?           @map("membership_id") @db.Uuid
+  startTime    DateTime          @map("start_time")
+  endTime      DateTime          @map("end_time")
+  status       AppointmentStatus @default(booked)
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+
+  studio     Studio      @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  service    Service     @relation(fields: [serviceId], references: [id])
+  provider   User        @relation("AppointmentProvider", fields: [providerId], references: [id])
+  client     User        @relation("AppointmentClient", fields: [clientId], references: [id])
+  membership Membership? @relation(fields: [membershipId], references: [id])
+
+  @@index([studioId])
+  @@index([studioId, providerId, startTime])
+  @@map("appointments")
+}
