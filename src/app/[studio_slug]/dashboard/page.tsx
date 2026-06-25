@@ -1,20 +1,13 @@
 /**
  * src/app/[studio_slug]/dashboard/page.tsx
  *
- * Owner/staff dashboard shell. Demonstrates the pattern every
- * tenant-scoped Server Component should follow:
- *   1. requireStudioAccessForPage() to resolve + verify the session
- *      (redirects to /login automatically if not signed in)
- *   2. getTenantDb(studioId) for any reads
- *
- * The three dashboard sub-features from the spec (CRM, scheduler,
- * attendance) are split into their own components so each can be
- * fleshed out independently; this page just lays out the shell.
+ * Dashboard overview. Auth and the sidebar nav are handled by
+ * layout.tsx now, so this page is just the stat cards and a few
+ * quick links into the busiest sub-pages.
  */
 
-import { requireStudioAccessForPage } from "@/lib/auth";
+import { requireStudioAccess } from "@/lib/auth";
 import { getTenantDb } from "@/lib/db";
-import { LogoutButton } from "@/components/LogoutButton";
 import Link from "next/link";
 
 export default async function DashboardPage({
@@ -23,44 +16,57 @@ export default async function DashboardPage({
   params: Promise<{ studio_slug: string }>;
 }) {
   const { studio_slug } = await params;
-  const session = await requireStudioAccessForPage({ minRole: ["owner", "staff"] });
+  const session = await requireStudioAccess({ minRole: ["owner", "staff"] });
   const db = getTenantDb(session.studioId);
 
-  const [clientCount, upcomingClassCount, activeMembershipCount] = await Promise.all([
-    db.user.count({ where: { role: "client" } }),
-    db.class.count({ where: { startTime: { gte: new Date() } } }),
-    db.membership.count({ where: { status: "active" } }),
-  ]);
+  const [clientCount, upcomingClassCount, activeMembershipCount, upcomingAppointmentCount] =
+    await Promise.all([
+      db.user.count({ where: { role: "client" } }),
+      db.class.count({ where: { startTime: { gte: new Date() } } }),
+      db.membership.count({ where: { status: "active" } }),
+      db.appointment.count({ where: { startTime: { gte: new Date() }, status: "booked" } }),
+    ]);
 
   return (
     <main className="mx-auto max-w-5xl p-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-slate-900">
-          {studio_slug} — Dashboard
-        </h1>
-        <LogoutButton />
-      </div>
+      <h1 className="text-2xl font-semibold text-slate-900">Overview</h1>
 
-      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Active clients" value={clientCount} />
         <StatCard label="Upcoming classes" value={upcomingClassCount} />
+        <StatCard label="Upcoming appointments" value={upcomingAppointmentCount} />
         <StatCard label="Active memberships" value={activeMembershipCount} />
       </div>
 
-      <nav className="mt-8 flex gap-4 text-sm font-medium text-blue-700">
-        <Link href={`/${studio_slug}/dashboard/clients`}>Clients (CRM)</Link>
-        <Link href={`/${studio_slug}/dashboard/schedule`}>Schedule</Link>
-        <Link href={`/${studio_slug}/dashboard/attendance`}>Attendance</Link>
-      </nav>
+      <div className="mt-10">
+        <h2 className="text-sm font-medium uppercase tracking-wide text-slate-400">
+          Quick links
+        </h2>
+        <div className="mt-3 flex flex-wrap gap-3">
+          <QuickLink href={`/${studio_slug}/dashboard/clients`} label="View clients" />
+          <QuickLink href={`/${studio_slug}/dashboard/schedule`} label="Manage schedule" />
+        </div>
+      </div>
     </main>
   );
 }
 
 function StatCard({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-lg border border-slate-200 p-4">
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
       <p className="text-sm text-slate-500">{label}</p>
       <p className="mt-1 text-3xl font-semibold text-slate-900">{value}</p>
     </div>
+  );
+}
+
+function QuickLink({ href, label }: { href: string; label: string }) {
+  return (
+    <Link
+      href={href}
+      className="rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-800"
+    >
+      {label}
+    </Link>
   );
 }
