@@ -39,6 +39,12 @@ create type appointment_status as enum (
   'booked', 'cancelled', 'late_cancelled', 'no_show', 'completed'
 );
 
+create type lead_status as enum (
+  'new', 'contacted', 'meeting_scheduled', 'trial_scheduled', 'converted', 'lost'
+);
+
+create type lead_task_type as enum ('follow_up', 'call', 'meeting', 'other');
+
 -- -------------------------------------------------------------
 -- TENANT ROOT: studios
 -- -------------------------------------------------------------
@@ -248,6 +254,71 @@ create index idx_appointments_studio_id on appointments (studio_id);
 create index idx_appointments_studio_provider_start on appointments (studio_id, provider_id, start_time);
 
 -- -------------------------------------------------------------
+-- LEADS MODULE
+-- -------------------------------------------------------------
+-- A lead is NOT a row in `users` -- leads haven't signed up for a
+-- Supabase auth account yet. When a lead converts, converted_user_id
+-- links to the new `users` row created for them; the lead row is
+-- kept for history/reporting rather than deleted.
+
+create table lead_sources (
+  id         uuid primary key default uuid_generate_v4(),
+  studio_id  uuid not null references studios (id) on delete cascade,
+  name       text not null,
+  created_at timestamptz not null default now(),
+
+  constraint uq_lead_sources_studio_name unique (studio_id, name)
+);
+
+create index idx_lead_sources_studio_id on lead_sources (studio_id);
+
+-- Studio-customizable reasons a lead didn't convert.
+create table lead_lost_reasons (
+  id         uuid primary key default uuid_generate_v4(),
+  studio_id  uuid not null references studios (id) on delete cascade,
+  name       text not null,
+  created_at timestamptz not null default now(),
+
+  constraint uq_lead_lost_reasons_studio_name unique (studio_id, name)
+);
+
+create index idx_lead_lost_reasons_studio_id on lead_lost_reasons (studio_id);
+
+create table leads (
+  id                 uuid primary key default uuid_generate_v4(),
+  studio_id          uuid not null references studios (id) on delete cascade,
+  full_name          text not null,
+  phone              text,
+  email              text,
+  source_id          uuid references lead_sources (id),
+  status             lead_status not null default 'new',
+  assigned_to_id     uuid references users (id), -- staff member working this lead
+  lost_reason_id     uuid references lead_lost_reasons (id),
+  notes              text,
+  converted_user_id  uuid references users (id),
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now()
+);
+
+create index idx_leads_studio_id on leads (studio_id);
+create index idx_leads_studio_status on leads (studio_id, status);
+
+create table lead_tasks (
+  id             uuid primary key default uuid_generate_v4(),
+  studio_id      uuid not null references studios (id) on delete cascade,
+  lead_id        uuid not null references leads (id) on delete cascade,
+  assigned_to_id uuid references users (id),
+  type           lead_task_type not null default 'follow_up',
+  description    text,
+  due_at         timestamptz not null,
+  completed_at   timestamptz,
+  created_at     timestamptz not null default now()
+);
+
+create index idx_lead_tasks_studio_id on lead_tasks (studio_id);
+create index idx_lead_tasks_studio_due on lead_tasks (studio_id, due_at);
+
+-- -------------------------------------------------------------
 -- updated_at auto-touch trigger (applied to every tenant table)
 -- -------------------------------------------------------------
 
@@ -277,6 +348,8 @@ create trigger trg_availability_blocks_updated_at before update on availability_
   for each row execute function set_updated_at();
 create trigger trg_appointments_updated_at before update on appointments
   for each row execute function set_updated_at();
+create trigger trg_leads_updated_at before update on leads
+  for each row execute function set_updated_at();
 
 -- =============================================================
 -- ROW LEVEL SECURITY (defense-in-depth for Supabase)
@@ -296,6 +369,10 @@ alter table services enable row level security;
 alter table availability_blocks enable row level security;
 alter table appointments enable row level security;
 alter table studio_settings enable row level security;
+alter table lead_sources enable row level security;
+alter table lead_lost_reasons enable row level security;
+alter table leads enable row level security;
+alter table lead_tasks enable row level security;
 
 create policy tenant_isolation_users on users
   using (studio_id = current_setting('app.current_studio_id', true)::uuid);
@@ -319,4 +396,16 @@ create policy tenant_isolation_appointments on appointments
   using (studio_id = current_setting('app.current_studio_id', true)::uuid);
 
 create policy tenant_isolation_studio_settings on studio_settings
+  using (studio_id = current_setting('app.current_studio_id', true)::uuid);
+
+create policy tenant_isolation_lead_sources on lead_sources
+  using (studio_id = current_setting('app.current_studio_id', true)::uuid);
+
+create policy tenant_isolation_lead_lost_reasons on lead_lost_reasons
+  using (studio_id = current_setting('app.current_studio_id', true)::uuid);
+
+create policy tenant_isolation_leads on leads
+  using (studio_id = current_setting('app.current_studio_id', true)::uuid);
+
+create policy tenant_isolation_lead_tasks on lead_tasks
   using (studio_id = current_setting('app.current_studio_id', true)::uuid);

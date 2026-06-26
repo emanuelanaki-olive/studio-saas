@@ -177,10 +177,64 @@ async function main() {
   });
 
   // pilates-pro uses a shorter, stricter cancellation window than
-  // yoga-flow's default — demonstrates that the setting is genuinely
+  // yoga-flow's default - demonstrates that the setting is genuinely
   // per-studio.
   await prisma.studioSettings.create({
     data: { studioId: pilatesPro.id, cancellationWindowHours: 24 },
+  });
+
+  // ---- Leads module demo data (yoga-flow only) ----
+  const [websiteSource, instagramSource, friendSource] = await Promise.all([
+    prisma.leadSource.create({ data: { studioId: yogaFlow.id, name: "Website" } }),
+    prisma.leadSource.create({ data: { studioId: yogaFlow.id, name: "Instagram" } }),
+    prisma.leadSource.create({ data: { studioId: yogaFlow.id, name: "Friend/Family" } }),
+  ]);
+
+  const [tooExpensiveReason] = await Promise.all([
+    prisma.leadLostReason.create({ data: { studioId: yogaFlow.id, name: "Too Expensive" } }),
+    prisma.leadLostReason.create({ data: { studioId: yogaFlow.id, name: "Moved Away" } }),
+    prisma.leadLostReason.create({ data: { studioId: yogaFlow.id, name: "Didn't Like" } }),
+  ]);
+
+  const newLead = await prisma.lead.create({
+    data: {
+      studioId: yogaFlow.id,
+      fullName: "Maya Cohen-Lead", // distinguishable from the instructor of the same first name
+      phone: "+972501112222",
+      email: "maya.prospect@example.com",
+      sourceId: websiteSource.id,
+      status: "new",
+    },
+  });
+
+  await prisma.leadTask.create({
+    data: {
+      studioId: yogaFlow.id,
+      leadId: newLead.id,
+      description: "First follow-up call",
+      dueAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    },
+  });
+
+  await prisma.lead.create({
+    data: {
+      studioId: yogaFlow.id,
+      fullName: "Ron Avraham",
+      phone: "+972503334444",
+      sourceId: instagramSource.id,
+      status: "trial_scheduled",
+    },
+  });
+
+  await prisma.lead.create({
+    data: {
+      studioId: yogaFlow.id,
+      fullName: "Tamar Levi",
+      sourceId: friendSource.id,
+      status: "lost",
+      lostReasonId: tooExpensiveReason.id,
+      notes: "Said the monthly rate was too high compared to her old studio.",
+    },
   });
 
   console.log("\nSeeded two tenants. Every login below uses the password: " + DEMO_PASSWORD + "\n");
@@ -191,6 +245,7 @@ async function main() {
   console.log(`\npilates-pro:`);
   console.log(`  owner:  ${pilatesOwner.email}`);
   console.log(`  client: ${pilatesClient.email}`);
+  console.log(`\nyoga-flow leads seeded: 3 (new, trial_scheduled, lost)`);
 }
 
 main()

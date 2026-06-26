@@ -49,6 +49,10 @@ const TENANT_SCOPED_MODELS = new Set([
   "service",
   "availabilityblock",
   "appointment",
+  "leadsource",
+  "leadlostreason",
+  "lead",
+  "leadtask",
 ]);
 
 /**

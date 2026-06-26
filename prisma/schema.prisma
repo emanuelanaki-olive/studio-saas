@@ -78,6 +78,29 @@ enum AppointmentStatus {
 }
 
 // -------------------------------------------------------------
+// LEADS MODULE
+// -------------------------------------------------------------
+
+enum LeadStatus {
+  new // just came in, no contact yet
+  contacted // staff reached out
+  meeting_scheduled // a sales/intro meeting is booked
+  trial_scheduled // a trial class/session is booked
+  converted // became a paying client (linked via Lead.convertedUserId)
+  lost // did not convert — see LeadLostReason for why
+}
+
+// Follow-up task type. Kept as a simple enum rather than a studio
+// picklist since the practical task types are stable across studios
+// (mirrors the "follow up" task seen in Arbox's task list).
+enum LeadTaskType {
+  follow_up
+  call
+  meeting
+  other
+}
+
+// -------------------------------------------------------------
 // TENANT ROOT
 // -------------------------------------------------------------
 
@@ -97,6 +120,10 @@ model Studio {
   settings           StudioSettings?
   services           Service[]
   appointments       Appointment[]
+  leadSources        LeadSource[]
+  leadLostReasons    LeadLostReason[]
+  leads              Lead[]
+  leadTasks          LeadTask[]
   availabilityBlocks AvailabilityBlock[]
 
   @@map("studios")
@@ -163,6 +190,12 @@ model User {
   appointmentsAsClient   Appointment[]       @relation("AppointmentClient")
   appointmentsAsProvider Appointment[]       @relation("AppointmentProvider")
   availabilityBlocks     AvailabilityBlock[] @relation("ProviderAvailability")
+
+  // Leads: as the staff member a lead is assigned to, as the user a
+  // lead converted into, or as the staff member assigned a follow-up task
+  leadsAssigned     Lead[]     @relation("LeadAssignee")
+  convertedFromLead Lead[]     @relation("LeadConvertedUser")
+  leadTasksAssigned LeadTask[] @relation("LeadTaskAssignee")
 
   // A user's email must be unique WITHIN a studio, not globally —
   // the same person (by email) could in theory be a client of two
@@ -354,4 +387,107 @@ model Appointment {
   @@index([studioId])
   @@index([studioId, providerId, startTime])
   @@map("appointments")
+}
+
+// =============================================================
+// LEADS MODULE
+// =============================================================
+// Mirrors what the screenshots showed: a "lead sources" picklist
+// (Website, Facebook, Instagram, WhatsApp, Friend/Family,
+// Commercial), a lead pipeline with a small fixed set of stages
+// (LeadStatus above), follow-up tasks with due dates, and a
+// "lost reason" picklist studios can customize themselves
+// (mirrors the long custom list of reasons seen in the Arbox
+// screenshots — "too expensive," "didn't like," "moved away," etc).
+//
+// A Lead is intentionally NOT a User row with role=lead — leads
+// don't have a Supabase Auth account (they haven't signed up for
+// anything yet), so they live in their own table. When a lead
+// converts, convertedUserId links to the User row created for them
+// at that point; the Lead row itself is kept for history/reporting
+// rather than deleted.
+
+model LeadSource {
+  id        String   @id @default(uuid()) @db.Uuid
+  studioId  String   @map("studio_id") @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  leads  Lead[]
+
+  @@unique([studioId, name])
+  @@index([studioId])
+  @@map("lead_sources")
+}
+
+// Studio-customizable reasons a lead didn't convert. This is
+// deliberately its OWN picklist, separate from any future
+// membership-cancellation or membership-freeze reason lists — the
+// screenshots showed Arbox keeping these as independently-editable
+// lists even though they serve a similar "why" purpose at different
+// points in the client lifecycle. (Membership cancel/freeze reasons
+// are not part of this layer; see the Memberships/Billing layer.)
+model LeadLostReason {
+  id        String   @id @default(uuid()) @db.Uuid
+  studioId  String   @map("studio_id") @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  leads  Lead[]
+
+  @@unique([studioId, name])
+  @@index([studioId])
+  @@map("lead_lost_reasons")
+}
+
+model Lead {
+  id               String      @id @default(uuid()) @db.Uuid
+  studioId         String      @map("studio_id") @db.Uuid
+  fullName         String      @map("full_name")
+  phone            String?
+  email            String?
+  sourceId         String?     @map("source_id") @db.Uuid
+  status           LeadStatus  @default(new)
+  assignedToId     String?     @map("assigned_to_id") @db.Uuid // staff member working this lead
+  lostReasonId     String?     @map("lost_reason_id") @db.Uuid
+  notes            String?
+  // Set when status transitions to `converted` — the new User row
+  // created for them. Kept separate from deleting/repurposing the
+  // Lead row so conversion history/reporting survives intact.
+  convertedUserId  String?     @map("converted_user_id") @db.Uuid
+  createdAt        DateTime    @default(now()) @map("created_at")
+  updatedAt        DateTime    @updatedAt @map("updated_at")
+
+  studio        Studio          @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  source        LeadSource?     @relation(fields: [sourceId], references: [id])
+  assignedTo    User?           @relation("LeadAssignee", fields: [assignedToId], references: [id])
+  lostReason    LeadLostReason? @relation(fields: [lostReasonId], references: [id])
+  convertedUser User?           @relation("LeadConvertedUser", fields: [convertedUserId], references: [id])
+  tasks         LeadTask[]
+
+  @@index([studioId])
+  @@index([studioId, status])
+  @@map("leads")
+}
+
+model LeadTask {
+  id           String       @id @default(uuid()) @db.Uuid
+  studioId     String       @map("studio_id") @db.Uuid
+  leadId       String       @map("lead_id") @db.Uuid
+  assignedToId String?      @map("assigned_to_id") @db.Uuid
+  type         LeadTaskType @default(follow_up)
+  description  String?
+  dueAt        DateTime     @map("due_at")
+  completedAt  DateTime?    @map("completed_at")
+  createdAt    DateTime     @default(now()) @map("created_at")
+
+  studio     Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  lead       Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  assignedTo User?  @relation("LeadTaskAssignee", fields: [assignedToId], references: [id])
+
+  @@index([studioId])
+  @@index([studioId, dueAt])
+  @@map("lead_tasks")
 }
