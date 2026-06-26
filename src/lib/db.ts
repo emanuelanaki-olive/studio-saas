@@ -58,12 +58,19 @@ const TENANT_SCOPED_MODELS = new Set([
 /**
  * Returns a Prisma Client extension that:
  *  1. Injects `studioId: studioId` into every `where` clause for
- *     reads (findMany, findFirst, findUnique, count, aggregate) on
- *     tenant-scoped models.
+ *     reads (findMany, findFirst, count, aggregate, groupBy) on
+ *     tenant-scoped models. findUnique is handled separately (see
+ *     below) since it can't take an extra where clause.
  *  2. Injects `studioId` into `data` on every `create`.
  *  3. Injects `studioId` into `where` for `update`, `updateMany`,
  *     `delete`, `deleteMany` so a request can never mutate another
  *     tenant's row even if it guesses a valid UUID.
+ *
+ * IMPORTANT: any Prisma query method not explicitly listed here runs
+ * UNSCOPED on a tenant model -- it will NOT be filtered by studioId.
+ * If you use a method that isn't one of the ones above (e.g.
+ * upsert(), a future Prisma addition), add it here following the
+ * same pattern before relying on it for tenant-scoped data.
  *
  * `studioId` MUST come from the authenticated session
  * (see src/lib/auth.ts -> getSessionStudioId()), never from a
@@ -109,6 +116,25 @@ export function getTenantDb(studioId: string) {
           return result;
         },
         async count({ model, args, query }) {
+          if (TENANT_SCOPED_MODELS.has(lower(model))) {
+            mergeStudioId(args, "where", studioId);
+          }
+          return query(args);
+        },
+        async aggregate({ model, args, query }) {
+          if (TENANT_SCOPED_MODELS.has(lower(model))) {
+            mergeStudioId(args, "where", studioId);
+          }
+          return query(args);
+        },
+        async groupBy({ model, args, query }) {
+          // groupBy was previously NOT intercepted here at all, which
+          // meant a tenant-scoped model's groupBy() ran completely
+          // unscoped -- silently aggregating data across every studio
+          // in the database. Caught when adding the Leads table's
+          // per-status counts; fixed here rather than patched around
+          // at each call site, since any future groupBy() call on a
+          // tenant-scoped model needs this protection automatically.
           if (TENANT_SCOPED_MODELS.has(lower(model))) {
             mergeStudioId(args, "where", studioId);
           }
