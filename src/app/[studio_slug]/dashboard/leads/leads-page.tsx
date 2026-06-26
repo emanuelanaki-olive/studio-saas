@@ -34,7 +34,7 @@ export default async function LeadsPage({
 
   const [leads, convertedCount, lostCount] = await Promise.all([
     db.lead.findMany({
-      where: { status: { in: ACTIVE_STATUSES } },
+      where: { status: { in: [...ACTIVE_STATUSES] } },
       include: {
         source: { select: { name: true } },
         tasks: { where: { completedAt: null }, orderBy: { dueAt: "asc" }, take: 1 },
