@@ -1,0 +1,10 @@
+# Real studio data and secrets never go into git
+data/*
+!data/.gitkeep
+config.yaml
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+reports/

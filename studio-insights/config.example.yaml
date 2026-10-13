@@ -1,0 +1,71 @@
+# העתיקו לקובץ config.yaml ועדכנו לפי הסטודיו.
+# Copy to config.yaml and edit. config.yaml is git-ignored.
+
+studio_name: "אוליב"
+timezone: "Asia/Jerusalem"
+
+# המחירים כוללים מע"מ
+vat_rate: 0.18
+prices_include_vat: true
+
+# מחיר חודשי לפי מספר כניסות. student = מנוי חיילות/סטודנטיות
+prices:
+  regular: {5: 280, 9: 480, 13: 600, 17: 700}
+  student: {5: 239, 9: 399, 13: 499}
+
+# מתחמים: מילות מפתח בשם השיעור, קיבולת ושכר מאמנת לשיעור
+areas:
+  pilates:
+    label: "פילאטיס"
+    keywords: ["פילאטיס", "פלאטיס"]
+    capacity: 8
+    trainer_pay: 120
+  strength:
+    label: "כוח"
+    keywords: ["כוח"]
+    capacity: 7
+    trainer_pay: 110
+
+# שיעור עם פחות מ-min_bookings מבוטל ולא משולם,
+# אלא אם הוא בין שני שיעורים של אותה מאמנת באותו יום - אז sandwich_pay
+cancellation:
+  min_bookings: 2
+  sandwich_pay: 80
+
+# הוצאות קבועות חודשיות (₪). "management" = משכורת הבעלים
+fixed_costs:
+  rent: 6000
+  arnona: 1400
+  fixed: 3000
+  sales: 3000
+  social: 1200
+  paid_ads: 2700
+  management: 3300
+
+# ספי התראות
+alerts:
+  inactive_days: 14            # מנויה שלא הגיעה X ימים ולא בהקפאה
+  churn_days: 30               # לא הגיעה X ימים = נחשבת עזבה
+  repeat_freeze_count: 3       # מספר הקפאות שמפעיל התראה
+  repeat_freeze_window_days: 180
+  weak_slot_occupancy: 0.5     # שעה חלשה = תפוסה ממוצעת מתחת ל...
+  strong_slot_occupancy: 0.85  # שעה חזקה = תפוסה ממוצעת מעל ל...
+  slot_lookback_weeks: 4
+  min_slot_sessions: 3
+  low_utilization: 0.6
+  weekly_new_clients_target: 10
+  holiday_lookahead_days: 45
+
+# WhatsApp Cloud API (Meta). את הסודות שמים במשתני סביבה, לא כאן:
+#   WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID
+whatsapp:
+  recipients: ["9725XXXXXXXX"]   # מספרים בפורמט בינלאומי בלי +
+  mode: "text"                   # text | template
+  template_name: "studio_report" # כשה-mode הוא template
+  template_lang: "he"
+
+# מקור הנתונים: excel (עכשיו) או arbox_api (כשיהיה מפתח)
+source:
+  type: excel
+  bookings_glob: "data/*shift-summary*.xlsx"
+  holds_glob: "data/*on-hold*.xlsx"
